@@ -48,8 +48,6 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
 #hud.on{display:flex}
 #stats{padding:7px 12px 6px;font-size:17px;line-height:1.25;min-width:112px}
 #stats strong{font-size:24px;font-weight:700}
-#gpsLine{display:block;font-size:13px;color:#5a6478;margin-top:2px}
-#gpsLine:empty{display:none}
 #compass{width:62px;height:62px;border-radius:50%;position:relative}
 #needle{position:absolute;inset:8px}
 #needle::before{content:"";position:absolute;left:50%;top:0;transform:translateX(-50%);
@@ -66,7 +64,7 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
 #pad button{padding:0;font-size:22px}
 #pad .u{grid-area:1/2}#pad .l{grid-area:2/1}#pad .j{grid-area:2/2;background:var(--red);color:#fff;border-color:#7a1f1a}#pad .r{grid-area:2/3}#pad .d{grid-area:3/2}
 
-#graph{position:fixed;left:10px;right:10px;top:calc(104px + env(safe-area-inset-top));height:92px;z-index:4;display:none;padding:6px 8px}
+#graph{position:fixed;left:10px;right:10px;top:calc(84px + env(safe-area-inset-top));height:92px;z-index:4;display:none;padding:6px 8px}
 #graph.on{display:block}
 #graph span{position:absolute;left:12px;top:6px;font-size:13px;color:#5a6478}
 #gcv{width:100%;height:100%}
@@ -114,7 +112,7 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
 </div>
 
 <div id="hud">
-  <div id="stats" class="dlg"><strong id="nSteps">0</strong> pasos<br><span id="nDist">0,0</span> m<span id="gpsLine"></span></div>
+  <div id="stats" class="dlg"><strong id="nSteps">0</strong> pasos<br><span id="nDist">0,0</span> m</div>
   <div id="compass" class="dlg" aria-label="Dirección del personaje"><div id="needle"></div></div>
 </div>
 
@@ -151,9 +149,6 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
   <label class="chk"><input type="checkbox" id="magnet"> Usar la brújula magnética</label>
   <div class="set"><p>Sigue el norte real, pero tiembla cerca de metal. Sin ella, el giro es más suave.</p></div>
   <label class="chk"><input type="checkbox" id="showGraph"> Ver la señal del acelerómetro</label>
-  <label class="chk"><input type="checkbox" id="useGps" checked> Corregir la posición con el GPS</label>
-  <label class="chk"><input type="checkbox" id="showGps"> Ver el punto del GPS en el mapa</label>
-  <div class="set"><p>El GPS solo funciona bien al aire libre. Con señal débil, como en interiores, se ignora y se usan solo los pasos. Camina unos 15 m en línea recta para que se oriente.</p></div>
   <label class="chk"><input type="checkbox" id="showPad"> Mostrar mando en pantalla</label>
   <p id="diag"></p>
   <p id="sens">Movimiento <span class="dot" id="dM"></span> Orientación <span class="dot" id="dO"></span></p>
@@ -311,10 +306,10 @@ function tileAt(x,y){
 }
 
 /* ================= ESTADO ================= */
-const cfg={sens:5,stride:0.7,graph:false,mode:'free',magnet:false,gps:true,gpsView:false};
+const cfg={sens:5,stride:0.7,graph:false,mode:'free',magnet:false};
 const TILES_PER_M=1.4, D2R=Math.PI/180;
 const st={x:0.5,y:0.5,ang:0,face:0,dir:'up',anim:0,moving:0,z:0,jumpT:-1,
-  steps:0,dist:0,running:false,lastStep:0,foot:0,segs:[],speed:2.8,pdrX:0,pdrY:0,pdrPath:0};
+  steps:0,dist:0,running:false,lastStep:0,foot:0,segs:[],speed:2.8};
 const feet=[];
 let mCount=0,oCount=0;
 let started=false,head=null,calib=0,gotMotion=false,gotOrient=false,gotAbs=false,curSrc=null,lastOri=0;
@@ -380,7 +375,6 @@ function commitStep(now){
   const tiles=stride*TILES_PER_M;
   st.speed=(iv>0&&iv<1600)?clamp(tiles/(iv/1000)*1.1,1.6,6.5):2.8;
   st.segs.push({d:tiles,a:snap(moveHeading())});
-  if(gps.phi!=null)gps.sigma+=0.05*stride;                     // la incertidumbre de los pasos crece al andar
   if(st.segs.length>3)st.segs.shift();
   st.steps++;st.dist+=stride;
   const r=st.ang*D2R,side=(st.foot^=1)?1:-1;
@@ -451,7 +445,7 @@ function onOrient(e){
   // Por defecto usamos la orientación por giroscopio (suave); la brújula magnética solo si se activa
   if(abs!==(cfg.magnet&&gotAbs))return;
   const src=abs?'a':'r';
-  if(src!==curSrc){curSrc=src;head=null;resetAlign();}
+  if(src!==curSrc){curSrc=src;head=null;}
   gotOrient=true;
   const h=headingFrom(e.alpha,e.beta||0,e.gamma||0);
   if(h==null)return;
@@ -459,90 +453,6 @@ function onOrient(e){
   if(head==null){head=h;calib=h;lastOri=now;mSin=0;mCos=1;return;}
   const dt=Math.min(0.2,(now-lastOri)/1000);lastOri=now;
   head=norm(head+angDiff(h,head)*(1-Math.exp(-dt/0.08)));
-}
-
-/* ================= GPS: corrige deriva de posición, rumbo y zancada ================= */
-// Marco: los metros "de juego" (x derecha, y arriba) se relacionan con el mundo real (Este, Norte)
-// mediante un giro phi y un desplazamiento T, que se estiman caminando en línea recta.
-const gps={watch:null,denied:false,origin:null,acc:null,lastFixT:0,fixes:0,
-  phi:null,T:[0,0],hist:[],pull:[0,0],sigma:2,view:null,outliers:0,corr:0,headFix:0};
-function resetAlign(){gps.phi=null;gps.T=[0,0];gps.hist=[];gps.pull=[0,0];gps.view=null;gps.sigma=2;gps.headFix=0;}
-function w2g(E,N){const c=Math.cos(gps.phi*D2R),s=Math.sin(gps.phi*D2R),dx=E-gps.T[0],dy=N-gps.T[1];return [dx*c-dy*s,dx*s+dy*c];}
-function setStride(v){cfg.stride=v;$('stride').value=v;$('strideV').textContent=v.toFixed(2).replace('.',',')+' m';}
-function startGps(){
-  if(!('geolocation' in navigator)||gps.watch!=null)return;
-  gps.watch=navigator.geolocation.watchPosition(onFix,err=>{
-    if(err.code===1){gps.denied=true;toast('Sin permiso de ubicación: solo uso los pasos');}
-  },{enableHighAccuracy:true,maximumAge:0,timeout:30000});
-}
-function stopGps(){if(gps.watch!=null)navigator.geolocation.clearWatch(gps.watch);gps.watch=null;resetAlign();}
-function onFix(p){
-  if(!cfg.gps)return;
-  const c=p.coords,now=performance.now();
-  gps.acc=c.accuracy;gps.lastFixT=now;gps.fixes++;gps.denied=false;
-  if(c.accuracy>25)return;                                   // señal débil: se ignora
-  if(!gps.origin)gps.origin={lat:c.latitude,lon:c.longitude,k:Math.cos(c.latitude*D2R)};
-  const E=(c.longitude-gps.origin.lon)*111320*gps.origin.k,N=(c.latitude-gps.origin.lat)*110574;
-  gps.hist.push({t:now,E,N,acc:c.accuracy,
-    px:st.pdrX/TILES_PER_M,py:-st.pdrY/TILES_PER_M,path:st.pdrPath/TILES_PER_M,
-    cx:(st.x+gps.pull[0])/TILES_PER_M,cy:-(st.y+gps.pull[1])/TILES_PER_M});
-  while(gps.hist.length>150||(gps.hist.length&&now-gps.hist[0].t>120000))gps.hist.shift();
-  tryAlign();
-  if(gps.phi!=null)correctPos(E,N,c.accuracy,now);
-}
-// Busca el tramo recto más largo que acaba ahora y compara la dirección de los pasos con la del GPS
-function tryAlign(){
-  const H=gps.hist,n=H.length;if(n<6)return;
-  const avg=(a,f)=>(H[a][f]+H[a+1][f]+H[a+2][f])/3;          // extremos promediados: menos ruido
-  const j=n-3;let best=null;
-  for(let i=n-6;i>=0;i--){
-    const dx=avg(j,'px')-avg(i,'px'),dy=avg(j,'py')-avg(i,'py'),dp=Math.hypot(dx,dy);
-    const path=avg(j,'path')-avg(i,'path');
-    if(path<0.5)continue;
-    if(dp/path<0.92)break;                                      // ya no es un tramo recto
-    const dE=avg(j,'E')-avg(i,'E'),dN=avg(j,'N')-avg(i,'N'),dg=Math.hypot(dE,dN);
-    const Dmin=Math.max(gps.phi==null?15:12,3*Math.max(H[i].acc,H[n-1].acc));
-    if(dg>=Dmin&&dp>=Dmin*0.5)best={dx,dy,dp,dE,dN,dg};
-  }
-  if(!best)return;
-  const meas=norm(Math.atan2(best.dE,best.dN)/D2R-Math.atan2(best.dx,best.dy)/D2R);
-  if(gps.phi==null){
-    gps.phi=meas;
-    const c=Math.cos(meas*D2R),s=Math.sin(meas*D2R);let sE=0,sN=0;
-    for(const h of H){sE+=h.E-(h.cx*c+h.cy*s);sN+=h.N-(-h.cx*s+h.cy*c);}
-    gps.T=[sE/n,sN/n];gps.sigma=2;
-    toast('GPS orientado');
-  }else{
-    const r=angDiff(meas,gps.phi);                              // cuánto se ha desviado el giroscopio
-    if(Math.abs(r)<45){const k=clamp(best.dg/25,0.3,0.7);calib-=r*k;gps.headFix+=r*k;}
-  }
-  const ratio=best.dg/best.dp;                                 // ¿tus pasos son más largos o más cortos de lo configurado?
-  if(ratio>0.6&&ratio<1.6)setStride(clamp(cfg.stride*(1+(ratio-1)*clamp(best.dg/40,0.15,0.4)),0.4,1.0));
-  gps.hist=H.slice(-3);                                         // la próxima medida, con datos nuevos
-}
-// Tira suavemente del personaje hacia la posición GPS, más cuanto más fiable es el GPS frente a los pasos
-function correctPos(E,N,acc,now){
-  const [gx,gy]=w2g(E,N),tx=gx*TILES_PER_M,ty=-gy*TILES_PER_M;
-  gps.view=[tx,ty,acc];
-  const ex=tx-(st.x+gps.pull[0]),ey=ty-(st.y+gps.pull[1]),em=Math.hypot(ex,ey)/TILES_PER_M;
-  if(em>3*acc+15&&++gps.outliers<3)return;                      // salto raro del GPS: esperamos confirmación
-  gps.outliers=0;
-  const P=gps.sigma*gps.sigma,R=acc*acc;
-  let K=P/(P+R);
-  if(now-st.lastStep>2000)K*=0.25;                              // quieto: casi no se corrige (evita que "baile")
-  gps.pull[0]+=ex*K;gps.pull[1]+=ey*K;
-  gps.sigma=Math.max(0.5,Math.sqrt((1-K)*P));
-  gps.corr++;
-}
-function gpsStatus(){
-  if(!cfg.gps)return '';
-  if(gps.denied)return 'GPS sin permiso';
-  if(!gps.fixes)return 'GPS buscando señal';
-  if(performance.now()-gps.lastFixT>10000)return 'GPS sin señal';
-  const a=Math.round(gps.acc);
-  if(gps.acc>25)return 'GPS débil (±'+a+' m)';
-  if(gps.phi==null)return 'GPS ±'+a+' m: camina recto';
-  return 'GPS ±'+a+' m: activo';
 }
 
 /* ================= BUCLE ================= */
@@ -568,12 +478,10 @@ function update(dt){
   const budget=st.speed*dt;let left=budget;
   while(left>0&&st.segs.length){
     const s=st.segs[0],mv=Math.min(s.d,left),r=s.a*D2R;
-    const ddx=Math.sin(r)*mv,ddy=-Math.cos(r)*mv;
-    st.x+=ddx;st.y+=ddy;st.pdrX+=ddx;st.pdrY+=ddy;st.pdrPath+=mv;s.d-=mv;left-=mv;
+    st.x+=Math.sin(r)*mv;st.y-=Math.cos(r)*mv;s.d-=mv;left-=mv;
     st.ang=s.a;st.dir=spriteDir(s.a,st.dir);
     if(s.d<=1e-4)st.segs.shift();
   }
-  if(gps.pull[0]||gps.pull[1]){const m=1-Math.exp(-dt/0.7),px_=gps.pull[0]*m,py_=gps.pull[1]*m;st.x+=px_;st.y+=py_;gps.pull[0]-=px_;gps.pull[1]-=py_;}
   if(left<budget){st.moving=0.15;st.anim+=dt*(st.running?10:7);}
   else st.moving=Math.max(0,st.moving-dt);
   if(st.jumpT>=0){st.jumpT+=dt/0.45;if(st.jumpT>=1){st.jumpT=-1;st.z=0;}else st.z=Math.sin(Math.PI*st.jumpT)*10;}
@@ -594,11 +502,6 @@ function render(){
   ctx.fillStyle='rgba(0,0,0,.25)';ctx.fillRect(X-sw+1,Y-1,sw*2-2,1);ctx.fillRect(X-sw+2,Y,sw*2-4,1);
   const s=SPR[st.dir];
   const img=st.moving>0?s.walk[(st.anim|0)%4]:s.idle;
-  if(cfg.gpsView&&gps.view){
-    const gxp=Math.round(gps.view[0]*16)-camX,gyp=Math.round(gps.view[1]*16)-camY;
-    ctx.strokeStyle='rgba(56,96,200,.55)';ctx.lineWidth=1;ctx.beginPath();ctx.arc(gxp,gyp,Math.max(3,gps.view[2]*TILES_PER_M*16),0,Math.PI*2);ctx.stroke();
-    ctx.fillStyle='#3860c8';ctx.fillRect(gxp-1,gyp-1,3,3);
-  }
   ctx.drawImage(img,X-8,Y-15-z);
   if(z<2&&tileAt(Math.floor(st.x),Math.floor(st.y))==='tall')ctx.drawImage(T.tall,0,10,16,6,X-8,Y-5,16,6);
 }
@@ -653,7 +556,6 @@ async function start(){
   addEventListener('devicemotion',onMotion);
   addEventListener('deviceorientation',onOrient);
   if('ondeviceorientationabsolute' in window)addEventListener('deviceorientationabsolute',onOrient);
-  if(cfg.gps&&window.isSecureContext)startGps();
   started=true;st.dir='up';st.ang=0;st.anim=0;st.moving=0;
   $('intro').style.display='none';$('hud').classList.add('on');$('bar').classList.add('on');
   wake();
@@ -668,7 +570,7 @@ addEventListener('keydown',e=>{if(!started&&e.code==='Enter')start();});
 
 $('calib').addEventListener('click',()=>{
   if(head==null){toast('Todavía no hay datos de orientación');return;}
-  calib=head;mSin=0;mCos=1;resetAlign();toast('Recalibrado: tu frente es arriba');
+  calib=head;mSin=0;mCos=1;toast('Recalibrado: tu frente es arriba');
 });
 $('openSheet').addEventListener('click',()=>$('sheet').classList.toggle('on'));
 $('closeSheet').addEventListener('click',()=>$('sheet').classList.remove('on'));
@@ -677,18 +579,14 @@ $('sensi').addEventListener('input',e=>{cfg.sens=+e.target.value;$('sensiV').tex
 $('stride').addEventListener('input',e=>{cfg.stride=+e.target.value;$('strideV').textContent=cfg.stride.toFixed(2).replace('.',',')+' m';});
 $('mode').addEventListener('change',e=>{cfg.mode=e.target.value;});
 $('magnet').addEventListener('change',e=>{
-  cfg.magnet=e.target.checked;curSrc=null;head=null;resetAlign();
+  cfg.magnet=e.target.checked;curSrc=null;head=null;
   toast(cfg.magnet&&!gotAbs?'Este navegador no da brújula: sigo con el giroscopio':'Recalibrado: tu frente es arriba');
 });
-$('useGps').addEventListener('change',e=>{cfg.gps=e.target.checked;if(cfg.gps){if(started)startGps();}else stopGps();});
-$('showGps').addEventListener('change',e=>{cfg.gpsView=e.target.checked;});
 $('showGraph').addEventListener('change',e=>{cfg.graph=e.target.checked;$('graph').classList.toggle('on',cfg.graph);});
 $('showPad').addEventListener('change',e=>$('pad').classList.toggle('on',e.target.checked));
 setInterval(()=>{
   $('dM').classList.toggle('ok',gotMotion);$('dO').classList.toggle('ok',gotOrient);
-  $('diag').innerHTML='Página segura (https): '+(window.isSecureContext?'sí':'no')+'<br>Lecturas recibidas: '+mCount+' de movimiento, '+oCount+' de orientación'
-    +(cfg.gps?'<br>GPS: '+(gps.fixes?'±'+Math.round(gps.acc)+' m, '+gps.corr+' correcciones, rumbo corregido '+Math.round(gps.headFix)+'°':'sin datos'):'');
-  $('gpsLine').textContent=started?gpsStatus():'';
+  $('diag').innerHTML='Página segura (https): '+(window.isSecureContext?'sí':'no')+'<br>Lecturas recibidas: '+mCount+' de movimiento, '+oCount+' de orientación';
 },500);
 
 /* ---- Teclado y mando en pantalla (para probar sin sensores) ---- */
