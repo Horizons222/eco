@@ -72,6 +72,8 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
 #sheet{position:fixed;left:10px;right:10px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:8;
   max-width:440px;margin:0 auto;padding:16px 18px;display:none;font-size:17px}
 #sheet.on{display:block}
+#sheet{max-height:calc(100vh - 110px);overflow-y:auto;touch-action:pan-y}
+#sheet select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(--paper);border:3px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px}
 #sheet h2{margin:0 0 10px;font-size:22px}
 .set{margin:0 0 14px}
 .set label{display:flex;justify-content:space-between}
@@ -114,7 +116,7 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
   <div id="compass" class="dlg" aria-label="Dirección del personaje"><div id="needle"></div></div>
 </div>
 
-<div id="graph" class="dlg"><span>Acelerómetro</span><canvas id="gcv"></canvas></div>
+<div id="graph" class="dlg"><span>Aceleración vertical</span><canvas id="gcv"></canvas></div>
 
 <div id="pad">
   <button class="u" data-dir="0" aria-label="Arriba">▲</button>
@@ -127,14 +129,25 @@ button.primary{background:var(--red);color:#fff;border-color:#7a1f1a;box-shadow:
 <div id="sheet" class="dlg">
   <h2>Ajustes</h2>
   <div class="set">
-    <label for="thr"><span>Umbral de paso</span><span id="thrV">1,0</span></label>
-    <input type="range" id="thr" min="0.5" max="3.5" step="0.1" value="1.0">
-    <p>Si cuenta pasos de más, súbelo. Si se le escapan, bájalo.</p>
+    <label for="sensi"><span>Sensibilidad de pasos</span><span id="sensiV">5</span></label>
+    <input type="range" id="sensi" min="1" max="9" step="1" value="5">
+    <p>Si cuenta pasos de más, bájala. Si se le escapan, súbela.</p>
   </div>
   <div class="set">
     <label for="stride"><span>Longitud de zancada</span><span id="strideV">0,70 m</span></label>
     <input type="range" id="stride" min="0.4" max="1.0" step="0.05" value="0.7">
+    <p>Se alarga sola cuando caminas más rápido.</p>
   </div>
+  <div class="set">
+    <label for="mode">Movimiento</label>
+    <select id="mode">
+      <option value="free">Libre, en cualquier ángulo</option>
+      <option value="8">8 direcciones</option>
+      <option value="4">4 direcciones, como en los juegos clásicos</option>
+    </select>
+  </div>
+  <label class="chk"><input type="checkbox" id="magnet"> Usar la brújula magnética</label>
+  <div class="set"><p>Sigue el norte real, pero tiembla cerca de metal. Sin ella, el giro es más suave.</p></div>
   <label class="chk"><input type="checkbox" id="showGraph"> Ver la señal del acelerómetro</label>
   <label class="chk"><input type="checkbox" id="showPad"> Mostrar mando en pantalla</label>
   <p id="diag"></p>
@@ -293,30 +306,79 @@ function tileAt(x,y){
 }
 
 /* ================= ESTADO ================= */
-const cfg={thr:1.0,stride:0.7,graph:false};
-const TILES_PER_M=1.4;
-const st={x:0.5,y:0.5,ang:180,dir:'down',pend:0,speed:2.8,anim:0,moving:0,z:0,jumpT:-1,
-  steps:0,dist:0,running:false,lastStep:0,foot:0};
+const cfg={sens:5,stride:0.7,graph:false,mode:'free',magnet:false};
+const TILES_PER_M=1.4, D2R=Math.PI/180;
+const st={x:0.5,y:0.5,ang:0,face:0,dir:'up',anim:0,moving:0,z:0,jumpT:-1,
+  steps:0,dist:0,running:false,lastStep:0,foot:0,segs:[],speed:2.8};
 const feet=[];
-let mCount=0, oCount=0;
-let started=false, head=null, calib=0, gotMotion=false, gotOrient=false, gotAbs=false;
-let keyDir=null, simLast=0, suppressUntil=0;
+let mCount=0,oCount=0;
+let started=false,head=null,calib=0,gotMotion=false,gotOrient=false,gotAbs=false,curSrc=null,lastOri=0;
+let keyDir=null,simLast=0,suppressUntil=0;
+let mSin=0,mCos=0; // media circular lenta del rumbo (dirección de marcha)
 const norm=a=>((a%360)+360)%360;
 const angDiff=(a,b)=>{let d=norm(a-b);return d>180?d-360:d;};
-const dirOf=a=>{a=norm(a);return (a>=315||a<45)?'up':a<135?'right':a<225?'down':'left';};
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 
-/* ================= PASOS Y SALTOS ================= */
-function onStep(now){
+// Sprite en 4 direcciones con histéresis: no cambia hasta pasar 12° del límite
+const DIRS=['up','right','down','left'];
+function spriteDir(a,cur){
+  const ci=DIRS.indexOf(cur);
+  if(ci>=0&&Math.abs(angDiff(a,ci*90))<57)return cur;
+  return DIRS[Math.round(norm(a)/90)%4];
+}
+function snap(a){
+  if(cfg.mode==='4')return norm(Math.round(a/90)*90);
+  if(cfg.mode==='8')return norm(Math.round(a/45)*45);
+  return a;
+}
+function moveHeading(){
+  if(keyDir!=null)return keyDir;
+  if(Math.hypot(mSin,mCos)<0.2)return st.face;
+  return norm(Math.atan2(mSin,mCos)/D2R);
+}
+
+/* ================= PASOS ================= */
+const det={g:[0,0,9.81],v:0,peakV:0,armed:true,peaks:[],intervals:[],lastPeak:0,pending:null,thr:1,lastDecay:0};
+const sensFactor=()=>0.65-(cfg.sens-1)*0.04;           // proporción del pico típico que hay que superar
+const sensFloor=()=>0.35+(9-cfg.sens)*0.05;            // umbral mínimo absoluto (m/s²)
+function stepThr(){
+  if(!det.peaks.length)return Math.max(sensFloor(),1.0*sensFactor()/0.49);
+  const s=[...det.peaks].sort((a,b)=>a-b);
+  return Math.max(sensFloor(),s[s.length>>1]*sensFactor());
+}
+function onPeak(now,amp){
   if(now<suppressUntil)return;
+  const since=now-det.lastPeak;
+  if(since<280)return;
+  const walking=now-st.lastStep<1600;
+  const avgIv=det.intervals.length?det.intervals.reduce((a,b)=>a+b)/det.intervals.length:0;
+  if(walking&&avgIv&&since<avgIv*0.5)return;   // doble pico dentro del mismo paso (golpe de talón)
+  det.lastPeak=now;
+  if(walking){
+    det.intervals.push(since);if(det.intervals.length>6)det.intervals.shift();
+    det.peaks.push(amp);if(det.peaks.length>8)det.peaks.shift();
+    commitStep(now);return;
+  }
+  // En reposo, un pico suelto (recolocar el móvil) no cuenta: hace falta un segundo pico seguido
+  if(det.pending&&now-det.pending.t<1600){
+    det.intervals=[now-det.pending.t];
+    det.peaks.push(det.pending.amp,amp);while(det.peaks.length>8)det.peaks.shift();
+    commitStep(det.pending.t);commitStep(now);det.pending=null;
+  }else det.pending={t:now,amp};
+}
+function commitStep(now){
   const iv=st.lastStep?now-st.lastStep:0;
   st.lastStep=now;
   st.running=iv>0&&iv<380;
-  const tiles=cfg.stride*TILES_PER_M;
-  st.speed=(iv>0&&iv<1200)?Math.min(6.5,Math.max(1.6,tiles/(iv/1000)*1.1)):2.8;
-  st.pend=Math.min(st.pend+tiles,tiles*2.5);
-  st.steps++;st.dist+=cfg.stride;
-  const r=st.ang*Math.PI/180,side=(st.foot^=1)?1:-1;
-  feet.push({x:st.x+Math.cos(r)*0.12*side,y:st.y+Math.sin(r)*0.12*side,t:now});
+  const cad=(iv>0&&iv<1600)?1000/iv:1.8;
+  const stride=cfg.stride*clamp(1+0.25*(cad-1.8),0.8,1.3);  // zancada más larga si caminas más rápido
+  const tiles=stride*TILES_PER_M;
+  st.speed=(iv>0&&iv<1600)?clamp(tiles/(iv/1000)*1.1,1.6,6.5):2.8;
+  st.segs.push({d:tiles,a:snap(moveHeading())});
+  if(st.segs.length>3)st.segs.shift();
+  st.steps++;st.dist+=stride;
+  const r=st.ang*D2R,side=(st.foot^=1)?1:-1;
+  feet.push({x:st.x+Math.cos(r)*0.12*side,y:st.y+Math.sin(r)*0.12*side,t:performance.now()});
   if(feet.length>80)feet.shift();
   $('nSteps').textContent=st.steps;
   $('nDist').textContent=st.dist.toFixed(1).replace('.',',');
@@ -324,50 +386,73 @@ function onStep(now){
 }
 function doJump(){
   if(st.jumpT>=0)return;
-  st.jumpT=0;suppressUntil=performance.now()+650;
+  st.jumpT=0;suppressUntil=performance.now()+650;det.pending=null;
   toast('¡Salto!');
   try{navigator.vibrate&&navigator.vibrate(15);}catch(e){}
 }
 
 /* ================= SENSORES ================= */
-let gEst=9.81,dynLP=0,armed=true,freeStart=0,jumpCool=0;
+let freeStart=0,jumpCool=0;
 function onMotion(e){
   mCount++;
-  let a=e.accelerationIncludingGravity,lin=false;
-  if(!a||a.x==null){a=e.acceleration;lin=true;}
-  if(!a||a.x==null)return;
+  const G=e.accelerationIncludingGravity,L=e.acceleration;
+  const hasG=!!(G&&G.x!=null),hasL=!!(L&&L.x!=null);
+  if(!hasG&&!hasL)return;
   gotMotion=true;
-  const m=Math.hypot(a.x,a.y,a.z),now=performance.now();
-  let dyn;
-  if(lin)dyn=m; else {gEst+=(m-gEst)*0.02;dyn=m-gEst;}
-  dynLP+=(dyn-dynLP)*0.35;
-  // Paso: pico por encima del umbral, con histéresis y tiempo mínimo entre pasos
-  if(armed&&dynLP>cfg.thr&&now-st.lastStep>260){armed=false;onStep(now);}
-  else if(!armed&&dynLP<cfg.thr*0.35)armed=true;
+  const now=performance.now();
+  let v;
+  if(hasG&&hasL){
+    // El sistema ya separa gravedad y movimiento: nos quedamos solo con la parte vertical
+    const gx=G.x-L.x,gy=G.y-L.y,gz=G.z-L.z,gn=Math.hypot(gx,gy,gz)||1;
+    v=(L.x*gx+L.y*gy+L.z*gz)/gn;
+  }else if(hasG){
+    const g=det.g;g[0]+=(G.x-g[0])*0.03;g[1]+=(G.y-g[1])*0.03;g[2]+=(G.z-g[2])*0.03;
+    const gn=Math.hypot(g[0],g[1],g[2])||1;
+    v=((G.x-g[0])*g[0]+(G.y-g[1])*g[1]+(G.z-g[2])*g[2])/gn;
+  }else v=Math.hypot(L.x,L.y,L.z);
+  det.v+=(v-det.v)*0.3;
+  det.thr=stepThr();
+  // Paso = máximo local de la aceleración vertical por encima del umbral adaptativo
+  if(det.armed){
+    if(det.v>det.thr){
+      det.peakV=Math.max(det.peakV,det.v);
+      if(det.v<det.peakV*0.85){onPeak(now,det.peakV);det.armed=false;det.peakV=0;}
+    }else if(det.peakV>0){onPeak(now,det.peakV);det.armed=false;det.peakV=0;}
+  }else if(det.v<det.thr*0.25)det.armed=true;
+  if(det.pending&&now-det.pending.t>1600)det.pending=null;
+  // Si llevas un rato quieto, el umbral vuelve poco a poco a su valor base
+  if(now-st.lastStep>2000&&now-det.lastDecay>1000){det.lastDecay=now;det.peaks=det.peaks.map(p=>p*0.85);}
   // Salto: el móvil cae "libre" (casi 0 g) durante más de ~90 ms
-  if(!lin&&m<3.5){if(!freeStart)freeStart=now;else if(now-freeStart>90&&now>jumpCool){doJump();jumpCool=now+700;}}
-  else freeStart=0;
-  gbuf[gi%gbuf.length]=dynLP;gi++;
+  if(hasG){
+    const m=Math.hypot(G.x,G.y,G.z);
+    if(m<3.5){if(!freeStart)freeStart=now;else if(now-freeStart>90&&now>jumpCool){doJump();jumpCool=now+700;}}
+    else freeStart=0;
+  }
+  gbuf[gi%gbuf.length]=det.v;gi++;
 }
 // Dirección "hacia donde miras": suma de la parte superior y la trasera del móvil proyectadas en horizontal
 function headingFrom(al,be,ga){
-  const D=Math.PI/180,cX=Math.cos(be*D),sX=Math.sin(be*D),cY=Math.cos(ga*D),sY=Math.sin(ga*D),cZ=Math.cos(al*D),sZ=Math.sin(al*D);
-  const topX=-cX*sZ, topY=cZ*cX;
-  const backX=-cZ*sY-sZ*sX*cY, backY=-sZ*sY+cZ*sX*cY;
-  const hx=topX+backX, hy=topY+backY;
+  const cX=Math.cos(be*D2R),sX=Math.sin(be*D2R),cY=Math.cos(ga*D2R),sY=Math.sin(ga*D2R),cZ=Math.cos(al*D2R),sZ=Math.sin(al*D2R);
+  const hx=-cX*sZ+(-cZ*sY-sZ*sX*cY), hy=cZ*cX+(-sZ*sY+cZ*sX*cY);
   if(Math.hypot(hx,hy)<0.15)return null;
-  return norm(Math.atan2(hx,hy)/D);
+  return norm(Math.atan2(hx,hy)/D2R);
 }
 function onOrient(e){
   oCount++;
   if(e.alpha==null)return;
-  if(e.type==='deviceorientationabsolute'){if(!gotAbs){gotAbs=true;head=null;}}
-  else if(gotAbs)return;
+  const abs=e.type==='deviceorientationabsolute';
+  if(abs)gotAbs=true;
+  // Por defecto usamos la orientación por giroscopio (suave); la brújula magnética solo si se activa
+  if(abs!==(cfg.magnet&&gotAbs))return;
+  const src=abs?'a':'r';
+  if(src!==curSrc){curSrc=src;head=null;}
   gotOrient=true;
   const h=headingFrom(e.alpha,e.beta||0,e.gamma||0);
   if(h==null)return;
-  if(head==null){head=h;calib=h;}
-  else head=norm(head+angDiff(h,head)*0.3);
+  const now=performance.now();
+  if(head==null){head=h;calib=h;lastOri=now;mSin=0;mCos=1;return;}
+  const dt=Math.min(0.2,(now-lastOri)/1000);lastOri=now;
+  head=norm(head+angDiff(h,head)*(1-Math.exp(-dt/0.08)));
 }
 
 /* ================= BUCLE ================= */
@@ -381,15 +466,24 @@ function resize(){
 addEventListener('resize',resize);resize();
 
 function update(dt){
-  const a=keyDir!=null?keyDir:(head!=null?norm(head-calib):null);
-  if(a!=null){st.ang=a;st.dir=dirOf(a);}
-  if(keyDir!=null&&performance.now()-simLast>420){simLast=performance.now();onStep(simLast);}
-  const mv=Math.min(st.pend,st.speed*dt);
-  if(mv>0.0005){
-    const r=st.ang*Math.PI/180;
-    st.x+=Math.sin(r)*mv;st.y-=Math.cos(r)*mv;st.pend-=mv;
-    st.moving=0.15;st.anim+=dt*(st.running?10:7);
-  }else{st.pend=0;st.moving=Math.max(0,st.moving-dt);}
+  const now=performance.now();
+  const disp=keyDir!=null?keyDir:(head!=null?norm(head-calib):null);
+  if(disp!=null){
+    st.face=disp;
+    const k=1-Math.exp(-dt/0.35);
+    mSin+=(Math.sin(disp*D2R)-mSin)*k;mCos+=(Math.cos(disp*D2R)-mCos)*k;
+    if(!st.segs.length){st.ang=snap(disp);st.dir=spriteDir(st.ang,st.dir);}
+  }
+  if(keyDir!=null&&now-simLast>420){simLast=now;commitStep(now);}
+  const budget=st.speed*dt;let left=budget;
+  while(left>0&&st.segs.length){
+    const s=st.segs[0],mv=Math.min(s.d,left),r=s.a*D2R;
+    st.x+=Math.sin(r)*mv;st.y-=Math.cos(r)*mv;s.d-=mv;left-=mv;
+    st.ang=s.a;st.dir=spriteDir(s.a,st.dir);
+    if(s.d<=1e-4)st.segs.shift();
+  }
+  if(left<budget){st.moving=0.15;st.anim+=dt*(st.running?10:7);}
+  else st.moving=Math.max(0,st.moving-dt);
   if(st.jumpT>=0){st.jumpT+=dt/0.45;if(st.jumpT>=1){st.jumpT=-1;st.z=0;}else st.z=Math.sin(Math.PI*st.jumpT)*10;}
 }
 
@@ -420,25 +514,24 @@ function drawGraph(){
   const dpr=Math.min(2,devicePixelRatio||1),w=gc.clientWidth*dpr|0,h=gc.clientHeight*dpr|0;
   if(gc.width!==w||gc.height!==h){gc.width=w;gc.height=h;}
   gx.clearRect(0,0,w,h);
-  const N=gbuf.length,max=4,mid=h*0.78,k=(h*0.72)/max;
+  const N=gbuf.length,max=4,mid=h*0.7,k=(h*0.62)/max;
   gx.lineWidth=dpr;gx.strokeStyle='#a8b8d0';gx.beginPath();gx.moveTo(0,mid);gx.lineTo(w,mid);gx.stroke();
-  gx.strokeStyle='#d8423a';gx.setLineDash([6*dpr,4*dpr]);gx.beginPath();gx.moveTo(0,mid-cfg.thr*k);gx.lineTo(w,mid-cfg.thr*k);gx.stroke();gx.setLineDash([]);
+  gx.strokeStyle='#d8423a';gx.setLineDash([6*dpr,4*dpr]);gx.beginPath();gx.moveTo(0,mid-det.thr*k);gx.lineTo(w,mid-det.thr*k);gx.stroke();gx.setLineDash([]);
   gx.strokeStyle='#3a7d44';gx.lineWidth=2*dpr;gx.beginPath();
-  for(let i=0;i<N;i++){const v=gbuf[(gi+i)%N],x=i/(N-1)*w,y=mid-Math.max(-1,Math.min(max,v))*k;i?gx.lineTo(x,y):gx.moveTo(x,y);}
+  for(let i=0;i<N;i++){const v=gbuf[(gi+i)%N],x=i/(N-1)*w,y=mid-clamp(v,-2,max)*k;i?gx.lineTo(x,y):gx.moveTo(x,y);}
   gx.stroke();
   gx.fillStyle='#d8423a';
   while(gmarks.length&&gi-gmarks[0]>=N)gmarks.shift();
   for(const m of gmarks){const x=(N-1-(gi-m))/(N-1)*w;gx.fillRect(x-dpr,h-8*dpr,2*dpr,8*dpr);}
 }
 
-/* ---- Vista previa en la intro ---- */
 let last=performance.now(),lastNeedle=-1;
 function loop(t){
   const dt=Math.min(0.05,(t-last)/1000);last=t;
   if(started)update(dt);
   else{st.dir='down';st.moving=1;st.anim+=dt*5;}
   render();drawGraph();
-  if(started&&Math.abs(st.ang-lastNeedle)>0.5){lastNeedle=st.ang;$('needle').style.transform='rotate('+st.ang+'deg)';}
+  if(started&&Math.abs(angDiff(st.face,lastNeedle))>0.5){lastNeedle=st.face;$('needle').style.transform='rotate('+st.face+'deg)';}
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
@@ -477,13 +570,18 @@ addEventListener('keydown',e=>{if(!started&&e.code==='Enter')start();});
 
 $('calib').addEventListener('click',()=>{
   if(head==null){toast('Todavía no hay datos de orientación');return;}
-  calib=head;toast('Recalibrado: tu frente es arriba');
+  calib=head;mSin=0;mCos=1;toast('Recalibrado: tu frente es arriba');
 });
 $('openSheet').addEventListener('click',()=>$('sheet').classList.toggle('on'));
 $('closeSheet').addEventListener('click',()=>$('sheet').classList.remove('on'));
 $('closeWarn').addEventListener('click',()=>$('warn').classList.remove('on'));
-$('thr').addEventListener('input',e=>{cfg.thr=+e.target.value;$('thrV').textContent=cfg.thr.toFixed(1).replace('.',',');});
+$('sensi').addEventListener('input',e=>{cfg.sens=+e.target.value;$('sensiV').textContent=cfg.sens;});
 $('stride').addEventListener('input',e=>{cfg.stride=+e.target.value;$('strideV').textContent=cfg.stride.toFixed(2).replace('.',',')+' m';});
+$('mode').addEventListener('change',e=>{cfg.mode=e.target.value;});
+$('magnet').addEventListener('change',e=>{
+  cfg.magnet=e.target.checked;curSrc=null;head=null;
+  toast(cfg.magnet&&!gotAbs?'Este navegador no da brújula: sigo con el giroscopio':'Recalibrado: tu frente es arriba');
+});
 $('showGraph').addEventListener('change',e=>{cfg.graph=e.target.checked;$('graph').classList.toggle('on',cfg.graph);});
 $('showPad').addEventListener('change',e=>$('pad').classList.toggle('on',e.target.checked));
 setInterval(()=>{
@@ -510,6 +608,7 @@ document.querySelectorAll('#pad [data-dir]').forEach(b=>{
 });
 $('jumpBtn').addEventListener('pointerdown',e=>{e.preventDefault();doJump();});
 })();
+
 </script>
 </body>
 </html>
