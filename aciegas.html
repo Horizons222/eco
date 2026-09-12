@@ -98,6 +98,7 @@ select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(-
 #pad button{padding:0;font-size:20px}
 #pad .u{grid-area:1/2}#pad .l{grid-area:2/1}#pad .r{grid-area:2/3}#pad .d{grid-area:3/2}
 #pad .run{grid-area:2/2;font-size:13px;background:var(--gold)}
+#pad .act{grid-area:3/3;font-size:13px;background:#7fd1e0}
 
 #toast{position:fixed;left:50%;top:42%;transform:translate(-50%,-50%);z-index:12;padding:8px 16px;font-size:19px;font-weight:600;
   opacity:0;transition:opacity .2s;pointer-events:none}
@@ -115,7 +116,7 @@ select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(-
   <button class="pick" id="pickCripta"><canvas width="240" height="60" data-prev="cripta"></canvas><span class="t">
     <b>La cripta del ídolo</b><span class="d">Un centinela patrulla, hay pinchos y una puerta cerrada. Coged el ídolo y escapad antes de que os alcance el espectro. 4 minutos.</span></span></button>
   <button class="pick" id="pickBosque"><canvas width="240" height="60" data-prev="bosque"></canvas><span class="t">
-    <b>El bosque perdido</b><span class="d">El mapa está a oscuras y se va descubriendo al caminar. Buscad tres runas en los cofres y volved al arco de piedra. 5 minutos.</span></span></button>
+    <b>El bosque perdido</b><span class="d">El bosque se abre según avanzáis. Tres cofres con runas, jabalíes y agua. El explorador salta en el sitio para abrir cofres y ahuyentar bichos. 5 minutos.</span></span></button>
   <button id="bExpl">Unirme a una partida: soy el explorador</button>
 </div>
 
@@ -208,6 +209,7 @@ select{width:100%;font:inherit;font-size:16px;color:var(--text);background:var(-
   <button class="run" id="bRun" aria-label="Correr">Correr</button>
   <button class="r" data-dir="90" aria-label="Derecha">▶</button>
   <button class="d" data-dir="180" aria-label="Abajo">▼</button>
+  <button class="act" id="bAct" aria-label="Saltar">Saltar</button>
 </div>
 
 <div id="toast" class="dlg"></div>
@@ -248,6 +250,8 @@ const SFX={
   chest:t=>[659,880,1175].forEach((f,i)=>tone(f,t+i*0.08,0.13,'square',0.09)),
   rune:t=>[988,1319].forEach((f,i)=>tone(f,t+i*0.12,0.3,'triangle',0.12)),
   bramble:t=>tone(320,t,0.25,'sawtooth',0.12,180),
+  thump:t=>tone(210,t,0.22,'triangle',0.3,90),
+  nope:t=>tone(240,t,0.12,'triangle',0.12),
   growl:t=>tone(160,t,0.5,'sawtooth',0.16,90),
   win:t=>[523,659,784,1047].forEach((f,i)=>tone(f,t+i*0.13,i===3?0.5:0.14)),
   lose:t=>[392,330,262,196].forEach((f,i)=>tone(f,t+i*0.2,0.22,'triangle',0.2)),
@@ -255,7 +259,7 @@ const SFX={
 };
 function sfx(k){if(!AC||!SFX[k])return;try{SFX[k](AC.currentTime+0.01);}catch(e){}}
 const VIB={wall:[70],hurt:[220,80,220],door:[40,40,40,40,40],idol:[60,40,60,40,200],alarm:[400,100,400],wake:[600],
-  chest:[50,50,50],rune:[60,40,60,40,200],bramble:[120],growl:[500],
+  chest:[50,50,50],rune:[60,40,60,40,200],bramble:[120],growl:[500],thump:[35,45,120],nope:[25],
   win:[100,60,100,60,400],lose:[900],go:[300],beep:[60],pause:[150,100,150],tick:[15]};
 function vib(k){try{navigator.vibrate&&VIB[k]&&navigator.vibrate(VIB[k]);}catch(e){}}
 let toastT;
@@ -316,7 +320,7 @@ let Wld=null;                                  // mundo activo
 function h2(x,y,s){let h=Math.imul(x|0,374761393)^Math.imul(y|0,668265263)^Math.imul(s|0,982451653);h=Math.imul(h^(h>>>13),1274126177);h^=h>>>16;return(h>>>0)/4294967296;}
 function px(g,c,x,y,w,h){g.fillStyle=c;g.fillRect(x,y,w||1,h||1);}
 
-const G={phase:'lobby',paused:false,mpt:0.6,lives:3,time:240,total:240,head:null,bumps:0,hurts:0,
+const G={phase:'lobby',paused:false,mpt:0.6,lives:3,time:240,total:240,head:null,bumps:0,hurts:0,act:false,actCd:0,
   lastTick:0,exSteps:0,connected:false,lastRx:0,exSens:null};
 const ex={x:0,y:0,dir:'up',face:0,segs:[],speed:2.5,anim:0,moving:0,inv:0,bumpCd:0,lastStep:0,running:false,mS:0,mC:1};
 const DIRS=['up','right','down','left'];
@@ -361,8 +365,13 @@ function simStep(iv){
   ex.segs.push({d:tiles,a});if(ex.segs.length>3)ex.segs.shift();
   ex.lastStep=performance.now();
 }
+function doAction(){
+  if(G.phase!=='play'||G.paused||G.actCd>0)return;
+  G.actCd=0.8;G.act=true;
+}
 function simUpdate(dt){
-  if(G.phase!=='play'||G.paused)return;
+  if(G.phase!=='play'||G.paused){G.act=false;return;}
+  G.actCd=Math.max(0,G.actCd-dt);
   G.time-=dt;
   if(G.time<=10&&Math.ceil(G.time)!==G.lastTick){G.lastTick=Math.ceil(G.time);sfx('last');}
   if(G.time<=0){G.time=0;endGame(false,'Se ha acabado el tiempo.');return;}
@@ -380,6 +389,7 @@ function simUpdate(dt){
   if(left<budget){ex.moving=0.15;ex.anim+=dt*(ex.running?10:7);}
   else{ex.moving=Math.max(0,ex.moving-dt);if(G.head!=null)ex.dir=spriteDir(G.head,ex.dir);}
   Wld.update(dt);
+  if(G.act){G.act=false;if(Wld.noAction)fx('nope');}
 }
 function endGame(won,why){
   if(G.phase!=='play')return;
@@ -552,9 +562,9 @@ const cripta=(()=>{
 
 /* ================= JUEGO 2: EL BOSQUE PERDIDO ================= */
 const bosque=(()=>{
-  const W=34,H=22,VIS=3.4;
-  let M=[],seen=null,mapC=cv(W*TS,H*TS),seed=1;
-  const START={x:3.5,y:18.5},ARCH={x:3,y:18};          // el arco de piedra es a la vez salida
+  const W=36,H=24;
+  let M=[],mapC=cv(W*TS,H*TS),seed=1;
+  const START={x:3.5,y:20.5},ARCH={x:3,y:20};          // el arco de piedra es a la vez salida
   let chests=[],boars=[],runes=0;
   const TILE={};
   function baseGrass(g,s){
@@ -628,7 +638,7 @@ const bosque=(()=>{
       }
       M.push(row);
     }
-    for(let y=16;y<=20;y++)for(let x=1;x<=6;x++)M[y][x]='g'+((h2(x,y,2)*4)|0);   // claro de salida
+    for(let y=18;y<=22;y++)for(let x=1;x<=6;x++)M[y][x]='g'+((h2(x,y,2)*4)|0);   // claro de salida
     M[ARCH.y][ARCH.x]='A';
   }
   function solid(tx,ty){
@@ -676,28 +686,30 @@ const bosque=(()=>{
       let n=0;for(let i=0;i<ok.length;i++)n+=ok[i];
       if(n>W*H*0.35&&place(ok))break;
     }
-    seen=new Uint8Array(W*H);
     ex.x=START.x;ex.y=START.y+0.5;ex.dir='up';
     G.time=G.total=300;
-    redraw();reveal();
-  }
-  function reveal(){
-    const r=Math.ceil(VIS);
-    for(let y=Math.floor(ex.y-r);y<=ex.y+r;y++)for(let x=Math.floor(ex.x-r);x<=ex.x+r;x++){
-      if(x<0||y<0||x>=W||y>=H)continue;
-      if(Math.hypot(x+0.5-ex.x,y+0.5-ex.y)<=VIS)seen[y*W+x]=1;
-    }
+    redraw();
   }
   function inTall(){const c=M[Math.floor(ex.y)][Math.floor(ex.x)];return c==='h';}
   function update(dt){
-    reveal();
     const tx=Math.floor(ex.x),ty=Math.floor(ex.y),c=M[ty][tx];
     if(c==='z'&&ex.bumpCd<=0){ex.bumpCd=1.5;G.time=Math.max(0,G.time-3);G.bumps++;fx('bramble');event('¡Zarzas! −3 s');}
+    let used=false;
     for(const ch of chests){
-      if(ch.open||Math.hypot(ch.x-ex.x,ch.y-ex.y)>0.8)continue;
-      ch.open=true;runes++;G.time+=10;
+      if(ch.open)continue;
+      if(Math.hypot(ch.x-ex.x,ch.y-ex.y)>0.9){ch.near=0;continue;}
+      ch.near=(ch.near||0)+dt;
+      if(!G.act&&ch.near<3.5){if(ch.near<dt*2)event('Estáis sobre un cofre: ¡que salte!');continue;}
+      used=true;ch.open=true;runes++;G.time+=10;
       fx(runes>=3?'rune':'chest');
       event(runes>=3?'¡Tercera runa! Volved al arco de piedra':'Runa '+runes+' de 3. +10 s');
+    }
+    // El salto también es un pisotón que asusta a los jabalíes de al lado
+    if(G.act){
+      let scared=0;
+      for(const b of boars)if(Math.hypot(b.x-ex.x,b.y-ex.y)<3){b.stun=3;b.chase=0;b.a=norm(Math.atan2(b.x-ex.x,-(b.y-ex.y))/D2R);scared++;}
+      if(!used){fx('thump');if(scared)event('¡Pisotón! '+(scared>1?'Los jabalíes huyen':'El jabalí huye'));}
+      G.act=false;
     }
     const hid=inTall();
     for(const b of boars){
@@ -720,24 +732,17 @@ const bosque=(()=>{
     }
     if(runes>=3&&Math.hypot(ex.x-(ARCH.x+0.5),ex.y-(ARCH.y+0.5))<1.2)endGame(true);
   }
-  function vis(x,y){return Math.hypot(x+0.5-ex.x,y+0.5-ex.y)<=VIS+0.6;}
   function render(t){
     ctx.drawImage(mapC,0,0);
-    // El arco es un punto de referencia que el guía conoce desde el principio
-    if(!seen[ARCH.y*W+ARCH.x])ctx.drawImage(TILE.A,ARCH.x*TS,ARCH.y*TS);
     if(runes>=3){ctx.strokeStyle='#8fe8ff';ctx.lineWidth=2;
       ctx.globalAlpha=0.5+0.4*Math.sin(t/200);ctx.strokeRect(ARCH.x*TS-3,ARCH.y*TS-3,TS+6,TS+6);ctx.globalAlpha=1;}
     const list=[];
     for(const ch of chests){
-      const cx=Math.floor(ch.x),cy=Math.floor(ch.y);
-      if(!seen[cy*W+cx])continue;
       list.push({y:ch.y,f:()=>{const X=Math.round(ch.x*TS),Y=Math.round(ch.y*TS);
         shadow(X,Y);ctx.drawImage(CHEST[ch.open?1:0],X-8,Y-13);
         if(!ch.open&&Math.floor(t/300)%3===0)px(ctx,'#fff',X+5,Y-12);}});
     }
     for(const b of boars){
-      const bx=Math.floor(b.x),by=Math.floor(b.y);
-      if(!seen[by*W+bx]||Math.hypot(b.x-ex.x,b.y-ex.y)>8.5)continue;
       list.push({y:b.y,f:()=>{const X=Math.round(b.x*TS),Y=Math.round(b.y*TS);
         shadow(X,Y);const dir=Math.sin(b.a*D2R)<0?0:1;
         ctx.drawImage(BOAR[dir][(b.anim|0)%2],X-8,Y-14);
@@ -746,12 +751,7 @@ const bosque=(()=>{
     }
     list.push({y:ex.y,f:()=>drawHero(t)});
     list.sort((a,b)=>a.y-b.y).forEach(o=>o.f());
-    // Niebla: negro donde nadie ha pisado, penumbra donde ya se estuvo
-    ctx.fillStyle='#120e18';
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(!seen[y*W+x])ctx.fillRect(x*TS,y*TS,TS,TS);
-    ctx.fillStyle='rgba(18,14,24,.5)';
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(seen[y*W+x]&&!vis(x,y))ctx.fillRect(x*TS,y*TS,TS,TS);
-    if(inTall()){ctx.fillStyle='rgba(60,140,60,.22)';ctx.fillRect(0,0,W*TS,H*TS);}
+    if(inTall()){ctx.fillStyle='rgba(60,140,60,.18)';ctx.fillRect(0,0,W*TS,H*TS);}
   }
   function target(){
     const left=chests.filter(c=>!c.open);
@@ -760,17 +760,21 @@ const bosque=(()=>{
     for(const c of left){const d=Math.hypot(c.x-ex.x,c.y-ex.y);if(d<bd){bd=d;best=c;}}
     return[best.x,best.y,'el cofre más cercano'];
   }
+  function onScreen(tx,ty){
+    return tx*TS>cam.x+8&&tx*TS<cam.x+cvs.width-8&&ty*TS>cam.y+8&&ty*TS<cam.y+cvs.height-8;
+  }
   function hint(){
     const[tx,ty,what]=target();
+    if(onScreen(tx,ty))return what+' está en pantalla';
     const d=Math.hypot(tx-ex.x,ty-ex.y);
     const a=norm(Math.atan2(tx-ex.x,-(ty-ex.y))/D2R);
     const names=['norte','noreste','este','sureste','sur','suroeste','oeste','noroeste'];
     return what+': '+names[Math.round(a/45)%8]+', a '+Math.round(d*G.mpt)+' m';
   }
-  return {key:'bosque',W,H,name:'El bosque perdido',
-    intro:'El mapa empieza a oscuras y se descubre al caminar. Hay jabalíes, agua, zarzas y tres cofres con runas escondidos. Con las tres, hay que volver al arco de piedra.',
+  return {key:'bosque',W,H,name:'El bosque perdido',scroll:true,zoom:3,
+    intro:'El bosque se va abriendo según avanzáis. Hay jabalíes, agua, zarzas y tres cofres con runas. Para abrir un cofre o asustar a un jabalí, el explorador da un salto en el sitio. Con las tres runas, hay que volver al arco de piedra.',
     bumpMsg:'¡Obstáculo!',bumpWord:'Choques',winTitle:'¡Habéis salido del bosque!',
-    countText:'Explorador: junto al arco de piedra, mirando al frente y con el móvil en el bolsillo.',
+    countText:'Explorador: junto al arco de piedra, mirando al frente y con el móvil en el bolsillo. Para actuar, salta en el sitio.',
     canvas:mapC,solid,reset,update,render,target,
     objective:()=>(runes>=3?'¡Volved al arco de piedra!':'Runas: '+runes+' de 3 · '+hint()),
     space:()=>'El explorador empieza cerca de una esquina del espacio, mirando hacia el lado largo.'};
@@ -784,15 +788,24 @@ function setGame(k){
   $('countT').textContent=Wld.countText;
   fitMap();
 }
+function camCenter(){
+  cam.x=clamp(Math.round(ex.x*TS-cvs.width/2),0,Math.max(0,Wld.W*TS-cvs.width));
+  cam.y=clamp(Math.round(ex.y*TS-cvs.height/2),0,Math.max(0,Wld.H*TS-cvs.height));
+}
 function camClamp(){
   if(!cam.on){cam.x=0;cam.y=0;return;}
-  cam.x=clamp(Math.round(ex.x*TS-cvs.width/2),0,Wld.W*TS-cvs.width);
-  cam.y=clamp(Math.round(ex.y*TS-cvs.height/2),0,Wld.H*TS-cvs.height);
+  const hx=ex.x*TS,hy=ex.y*TS;
+  const mx=Math.min(cvs.width*0.32,7*TS),my=Math.min(cvs.height*0.32,7*TS);
+  cam.x=clamp(cam.x,hx-cvs.width+mx,hx-mx);
+  cam.y=clamp(cam.y,hy-cvs.height+my,hy-my);
+  cam.x=clamp(Math.round(cam.x),0,Math.max(0,Wld.W*TS-cvs.width));
+  cam.y=clamp(Math.round(cam.y),0,Math.max(0,Wld.H*TS-cvs.height));
 }
 function resetGame(){
   Object.assign(G,{phase:'lobby',paused:false,lives:3,bumps:0,hurts:0,lastTick:0});
   Object.assign(ex,{dir:'up',face:0,segs:[],anim:0,moving:0,inv:0,bumpCd:0,lastStep:0,running:false,mS:0,mC:1});
   Wld.reset();
+  fitMap();camCenter();
 }
 function fitMap(){
   if(!Wld)return;
@@ -801,19 +814,24 @@ function fitMap(){
   if($('gbar').classList.contains('on'))bottom=$('gbar').offsetHeight+8;
   for(const id of['glob','gend'])if($(id).classList.contains('on'))bottom=Math.max(bottom,$(id).offsetHeight+18);
   const aw=innerWidth-8,ah=Math.max(120,innerHeight-top-bottom);
+  const zt=Wld.zoom||2;
   const full=Math.min(aw/(Wld.W*TS),ah/(Wld.H*TS));
-  if(cam.auto)cam.on=full<2;
+  if(Wld.scroll)cam.on=true;else if(cam.auto)cam.on=full<2;
   if(cam.on){
-    cam.vw=clamp(Math.floor(aw/(2*TS)),10,Wld.W);
-    cam.vh=clamp(Math.floor(ah/(2*TS)),8,Wld.H);
+    // Se busca el mayor aumento que deje ver un trozo de mundo decente y llene la pantalla
+    let z=zt;
+    for(;z>1;z--)if(Math.floor(aw/(z*TS))>=11&&Math.floor(ah/(z*TS))>=11)break;
+    cam.vw=clamp(Math.floor(aw/(z*TS)),8,Wld.W);
+    cam.vh=clamp(Math.floor(ah/(z*TS)),8,Wld.H);
   }else{cam.vw=Wld.W;cam.vh=Wld.H;}
   const w=cam.vw*TS,h=cam.vh*TS;
   if(cvs.width!==w||cvs.height!==h){cvs.width=w;cvs.height=h;ctx.imageSmoothingEnabled=false;}
   let s=Math.min(aw/w,ah/h);if(s>=2)s=Math.floor(s);
   cvs.style.width=w*s+'px';cvs.style.height=h*s+'px';
   cvs.style.left=((innerWidth-w*s)/2)+'px';cvs.style.top=(top+(ah-h*s)/2)+'px';
+  $('bZoom').style.display=Wld.scroll?'none':'';
   $('bZoom').textContent=cam.on?'Ver todo':'Acercar';
-  camClamp();
+  camCenter();camClamp();
 }
 addEventListener('resize',fitMap);
 
@@ -832,12 +850,15 @@ function updateHud(){
 function isLinked(){return G.connected&&performance.now()-G.lastRx<5000;}
 
 /* ================= SENSORES ================= */
-const S={on:false,head:null,raw:null,calib:0,axis:-1,axisOff:0,lastOri:0,gotMotion:false,gotOrient:false,lastStep:0,steps:0,onStep:null,
+const S={on:false,head:null,raw:null,calib:0,axis:-1,axisOff:0,lastOri:0,gotMotion:false,gotOrient:false,lastStep:0,steps:0,onStep:null,onJump:null,
+  free:0,jumpCd:0,noStep:0,jumps:0,
   d:{g:[0,0,9.81],v:0,peakV:0,armed:true,peaks:[],intervals:[],lastPeak:0,pending:null,thr:1,lastDecay:0}};
 function sRel(){return S.head==null?null:norm(S.head-S.calib);}
 function sCalibrate(){if(S.head!=null)S.calib=S.head;}
 function stepThr(){const d=S.d;if(!d.peaks.length)return 1.0;const s=[...d.peaks].sort((a,b)=>a-b);return Math.max(0.55,s[s.length>>1]*0.49);}
-function commitStep(now){const iv=S.lastStep?now-S.lastStep:0;S.lastStep=now;S.steps++;if(S.onStep)S.onStep(iv);}
+function commitStep(now){if(now<S.noStep)return;const iv=S.lastStep?now-S.lastStep:0;S.lastStep=now;S.steps++;if(S.onStep)S.onStep(iv);}
+// Al saltar, el móvil cae libre y la gravedad casi desaparece: eso no pasa nunca caminando
+function doJump(){S.jumps++;S.noStep=performance.now()+600;S.d.pending=null;if(S.onJump)S.onJump();}
 function onPeak(now,amp){
   const d=S.d,since=now-d.lastPeak;if(since<280)return;
   const walking=now-S.lastStep<1600;
@@ -858,6 +879,11 @@ function onMotion(e){
   else if(hasG){const g=d.g;g[0]+=(Gv.x-g[0])*0.03;g[1]+=(Gv.y-g[1])*0.03;g[2]+=(Gv.z-g[2])*0.03;const gn=Math.hypot(g[0],g[1],g[2])||1;
     v=((Gv.x-g[0])*g[0]+(Gv.y-g[1])*g[1]+(Gv.z-g[2])*g[2])/gn;}
   else v=Math.hypot(L.x,L.y,L.z);
+  if(hasG){
+    const m=Math.hypot(Gv.x,Gv.y,Gv.z);
+    if(m<3.6){if(!S.free)S.free=now;else if(now-S.free>85&&now>S.jumpCd){S.jumpCd=now+900;doJump();}}
+    else S.free=0;
+  }
   d.v+=(v-d.v)*0.3;d.thr=stepThr();
   if(d.armed){
     if(d.v>d.thr){d.peakV=Math.max(d.peakV,d.v);if(d.v<d.peakV*0.85){onPeak(now,d.peakV);d.armed=false;d.peakV=0;}}
@@ -905,6 +931,7 @@ addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
   if(e.code in KEYS){e.preventDefault();press(e.code);}
   if(e.key==='Shift')runHeld=true;
+  if(e.code==='Space'){e.preventDefault();doJump();}
 });
 addEventListener('keyup',e=>{if(e.code in KEYS)release(e.code);if(e.key==='Shift')runHeld=false;});
 addEventListener('blur',()=>{held.length=0;keyDir=null;runHeld=false;});
@@ -914,6 +941,7 @@ document.querySelectorAll('#pad [data-dir]').forEach(b=>{
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>release(d)));
 });
 $('bRun').addEventListener('pointerdown',e=>{e.preventDefault();runHeld=!runHeld;$('bRun').textContent=runHeld?'Andar':'Correr';});
+$('bAct').addEventListener('pointerdown',e=>{e.preventDefault();doJump();});
 function keyTick(now){
   if(keyDir==null)return;
   const iv=runHeld?280:430;
@@ -980,6 +1008,7 @@ function onNetData(o){
     switch(o.t){
       case 'hello':netSend({t:'welcome',g:Wld.name});sendPhase();break;
       case 's':simStep(o.iv||0);break;
+      case 'j':doAction();break;
       case 'h':if(typeof o.a==='number')G.head=o.a;break;
       case 'sens':G.exSens=o;break;
     }
@@ -1018,7 +1047,7 @@ function enterGuide(solo){
   show('role',false);cvs.style.display='block';resetGame();
   show('glob',true);$('netRow').style.display=solo?'none':'flex';
   updateSpace();updateLobby();
-  if(solo){startSensors();S.onStep=iv=>simStep(iv);setTimeout(()=>{if(!S.gotMotion)show('pad',true);updateLobby();},1500);}
+  if(solo){startSensors();S.onStep=iv=>simStep(iv);S.onJump=()=>doAction();setTimeout(()=>{if(!S.gotMotion)show('pad',true);updateLobby();},1500);}
   else if(needPeer())hostRoom();
   fitMap();
 }
@@ -1064,9 +1093,9 @@ function xRender(){
   $('xStats').hidden=!(p==='play'||p==='pause');
   $('xTime').textContent=fmtTime(X.time);$('xLives').textContent='♥'.repeat(Math.max(0,X.lives));
   if(!X.linked&&p!=='won'&&p!=='lost'){xSet('Conectando con el guía…','Partida '+(Net.code||''));return;}
-  if(p==='lobby')xSet('Conectado con el guía',(X.game?'Vais a jugar a "'+X.game+'". ':'')+'Camina unos pasos para probar: notarás un toque en cada paso. Cuando el guía empiece, colócate donde te diga, mira al frente y guarda el móvil en el bolsillo.');
+  if(p==='lobby')xSet('Conectado con el guía',(X.game?'Vais a jugar a "'+X.game+'". ':'')+'Camina unos pasos para probar: notarás un toque en cada paso, y un golpe doble si saltas. Cuando el guía empiece, colócate donde te diga, mira al frente y guarda el móvil en el bolsillo.');
   else if(p==='count')xSet(String(X.count),'Quieto, mirando al frente. Móvil en el bolsillo.');
-  else if(p==='play')xSet('Escucha al guía','No mires la pantalla: tu guía ve el mundo por ti.');
+  else if(p==='play')xSet('Escucha al guía','No mires la pantalla: tu guía ve el mundo por ti. Salta en el sitio para actuar.');
   else if(p==='pause')xSet('Pausa','Espera a que el guía siga.');
   else if(p==='won')xSet('¡Lo habéis conseguido!',X.result);
   else if(p==='lost')xSet('Fin de la partida',X.result);
@@ -1083,6 +1112,7 @@ function enterExplorer(code){
   MODE='explorer';audioOn();wake();
   show('home',false);show('join',false);show('xscr',true);
   startSensors();
+  S.onJump=()=>{netSend({t:'j'});vib('thump');};
   S.onStep=iv=>{netSend({t:'s',iv});if(X.phase==='lobby'){vib('tick');const d=$('xStep');if(d){d.classList.add('on');setTimeout(()=>d.classList.remove('on'),150);}}};
   joinRoom(code);xRender();
   setInterval(()=>{const h=localHeading();if(h!=null)netSend({t:'h',a:Math.round(h*10)/10});},90);
@@ -1121,14 +1151,9 @@ function previews(){
     setGame(k);Wld.reset();
     const src=Wld.canvas,sw=c.width/2,sh=c.height/2;
     const sx=k==='cripta'?13.5*TS:Math.max(0,Math.min(src.width-sw,(ex.x*TS)-sw/2));
-    const sy=k==='cripta'?0:Math.max(0,Math.min(src.height-sh,(ex.y*TS)-sh*0.62));
+    const sy=k==='cripta'?0:Math.max(0,Math.min(src.height-sh,(ex.y*TS)-sh*0.55));
     g.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);
-    if(k==='bosque'){                                     // la miniatura enseña la niebla
-      g.fillStyle='rgba(16,12,22,.86)';g.fillRect(0,0,c.width,c.height);
-      const cx=c.width*0.5,cy=c.height*0.62,r=c.height*0.5;
-      g.save();g.beginPath();g.arc(cx,cy,r,0,7);g.clip();
-      g.drawImage(src,sx,sy,sw,sh,0,0,c.width,c.height);g.restore();
-    }
+
   }
   setGame('cripta');
 }
